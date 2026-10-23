@@ -94,7 +94,7 @@ class HospitalClient(fl.client.NumPyClient):
         return get_parameters(net)
 
     def fit(self, parameters, config):
-        # Create a fresh clean model for every round so Opacus hooks never collide
+        
         net = CancerDiagnosticMLP().to(DEVICE)
         set_parameters(net, parameters)
         trained_net, epsilon = train_local_dp(

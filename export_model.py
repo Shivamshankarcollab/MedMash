@@ -6,7 +6,7 @@ from model import CancerDiagnosticMLP
 DEVICE = torch.device("cpu")
 
 def export_trained_model():
-    # Load combined silo data to produce the final aggregated evaluation weights
+    
     dfs = [pd.read_csv(f"data/{h}/train.csv") for h in ["aiims", "tata", "apollo"]]
     df_all = pd.concat(dfs, ignore_index=True)
     
