@@ -20,18 +20,16 @@ def get_dataloader(csv_path: str, batch_size: int = 16, shuffle: bool = True):
     X = df.drop(columns=["target"]).values.astype(np.float32)
     y = df["target"].values.astype(np.float32).reshape(-1, 1)
     dataset = TensorDataset(torch.tensor(X), torch.tensor(y))
-    # drop_last=True prevents unequal batch math issues in Opacus privacy accountant
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=True)
 
 def get_base_module(model):
-    """Unwraps model if wrapped inside Opacus GradSampleModule."""
     while hasattr(model, "_module"):
         model = model._module
     return model
 
 def train_local_dp(model, dataloader, epochs=3, lr=0.005, target_epsilon=1.5, target_delta=1e-5):
-    # Ensure all layers are fully compatible with DP per-sample gradients
-    model = ModuleValidator.fix(get_base_module(model))
+    model.train()
+    model = ModuleValidator.fix(model)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -57,7 +55,6 @@ def train_local_dp(model, dataloader, epochs=3, lr=0.005, target_epsilon=1.5, ta
             dp_optimizer.step()
 
     epsilon = privacy_engine.get_epsilon(delta=target_delta)
-    # Return unwrapped clean model along with consumed epsilon
     return get_base_module(dp_model), epsilon
 
 def evaluate_local(model, dataloader):
@@ -89,17 +86,19 @@ def set_parameters(net, parameters):
 class HospitalClient(fl.client.NumPyClient):
     def __init__(self, hospital_name: str):
         self.hospital_name = hospital_name
-        self.net = CancerDiagnosticMLP().to(DEVICE)
         self.train_loader = get_dataloader(f"data/{hospital_name}/train.csv", batch_size=16, shuffle=True)
         self.test_loader = get_dataloader(f"data/{hospital_name}/test.csv", batch_size=16, shuffle=False)
 
     def get_parameters(self, config):
-        return get_parameters(self.net)
+        net = CancerDiagnosticMLP().to(DEVICE)
+        return get_parameters(net)
 
     def fit(self, parameters, config):
-        set_parameters(self.net, parameters)
-        self.net, epsilon = train_local_dp(
-            self.net,
+        # Create a fresh clean model for every round so Opacus hooks never collide
+        net = CancerDiagnosticMLP().to(DEVICE)
+        set_parameters(net, parameters)
+        trained_net, epsilon = train_local_dp(
+            net,
             self.train_loader,
             epochs=3,
             lr=0.005,
@@ -107,11 +106,12 @@ class HospitalClient(fl.client.NumPyClient):
             target_delta=1e-5
         )
         print(f"[{self.hospital_name.upper()}] DP-SGD Round Complete | Privacy Spent (ε): {epsilon:.2f} (δ=1e-5)")
-        return get_parameters(self.net), len(self.train_loader.dataset), {"epsilon": float(epsilon)}
+        return get_parameters(trained_net), len(self.train_loader.dataset), {"epsilon": float(epsilon)}
 
     def evaluate(self, parameters, config):
-        set_parameters(self.net, parameters)
-        loss, accuracy = evaluate_local(self.net, self.test_loader)
+        net = CancerDiagnosticMLP().to(DEVICE)
+        set_parameters(net, parameters)
+        loss, accuracy = evaluate_local(net, self.test_loader)
         print(f"[{self.hospital_name.upper()}] Evaluation -> Loss: {loss:.4f}, Accuracy: {accuracy * 100:.2f}%")
         return float(loss), len(self.test_loader.dataset), {"accuracy": float(accuracy)}
 
